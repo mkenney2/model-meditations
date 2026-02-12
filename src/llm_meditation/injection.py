@@ -18,30 +18,29 @@ def inject_system_pre(
     messages: list[dict], report: MeditationReport
 ) -> list[dict]:
     """
-    Insert the report as a system message immediately before the last user message.
+    Prepend the meditation report to the last user message as context.
 
-    Pros: simple, model sees it as authoritative context
-    Cons: some models ignore mid-conversation system messages
+    This is more robust than inserting a system message mid-conversation,
+    which many chat templates (including Gemma 3) don't support.
     """
     messages = copy.deepcopy(messages)
 
     if not messages:
-        return [{"role": "system", "content": report.report_text}]
+        return [{"role": "user", "content": report.report_text}]
 
-    # Find the last user message index
-    last_user_idx = None
+    # Find the last user message and prepend the report
     for i in range(len(messages) - 1, -1, -1):
         if messages[i]["role"] == "user":
-            last_user_idx = i
-            break
+            messages[i]["content"] = (
+                f"[Internal observation from self-monitoring system]\n"
+                f"{report.report_text}\n"
+                f"[End observation]\n\n"
+                f"{messages[i]['content']}"
+            )
+            return messages
 
-    if last_user_idx is not None:
-        # Insert system message before the last user message
-        messages.insert(last_user_idx, {"role": "system", "content": report.report_text})
-    else:
-        # No user messages — just prepend
-        messages.insert(0, {"role": "system", "content": report.report_text})
-
+    # No user messages — prepend as system message at start
+    messages.insert(0, {"role": "system", "content": report.report_text})
     return messages
 
 
@@ -49,10 +48,10 @@ def inject_tool_response(
     messages: list[dict], report: MeditationReport
 ) -> list[dict]:
     """
-    Format as if the model called a 'meditate' tool and received the report back.
+    Format as a simulated tool call/response pair before the last user message.
 
-    Pros: natural for models trained on tool use; matches the meditation metaphor
-    Cons: requires the model to understand tool response format
+    Uses assistant + user message pair to simulate tool interaction, which is
+    compatible with all chat templates (unlike role="tool" which many don't support).
     """
     messages = copy.deepcopy(messages)
 
@@ -65,15 +64,14 @@ def inject_tool_response(
 
     insert_idx = (last_user_idx or 0)
 
-    # Insert tool call and response before the last user message
+    # Simulate as assistant requesting introspection + user relaying the result
     tool_call_msg = {
         "role": "assistant",
         "content": "[Initiating meditation — introspecting on internal state]",
     }
     tool_response_msg = {
-        "role": "tool",
-        "content": report.report_text,
-        "name": "meditate",
+        "role": "user",
+        "content": f"[Meditation tool result]\n{report.report_text}\n[End result]",
     }
 
     messages.insert(insert_idx, tool_call_msg)
