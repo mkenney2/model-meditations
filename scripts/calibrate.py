@@ -15,6 +15,7 @@ from pathlib import Path
 
 import torch
 from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent
@@ -42,15 +43,12 @@ def load_calibration_prompts(dataset_name: str, n: int) -> list[str]:
             ds = load_dataset(dataset_name, split="train", streaming=True)
             prompts = []
             for item in ds:
-                # LMSYS format: conversation is a list of turns
                 conv = item.get("conversation", [])
                 if not conv:
                     continue
-                # Filter for English
                 lang = item.get("language", "English")
                 if lang != "English":
                     continue
-                # Get first user message
                 first_user = None
                 for turn in conv:
                     if turn.get("role") == "user":
@@ -76,13 +74,12 @@ def load_calibration_prompts(dataset_name: str, n: int) -> list[str]:
             return prompts
 
         else:
-            # Generic: try loading as conversation dataset
             ds = load_dataset(dataset_name, split="train", streaming=True)
             prompts = []
             for item in ds:
                 text = str(next(iter(item.values())))
                 if len(text) > 10:
-                    prompts.append(text[:500])  # truncate long texts
+                    prompts.append(text[:500])
                 if len(prompts) >= n:
                     break
             return prompts
@@ -95,8 +92,6 @@ def load_calibration_prompts(dataset_name: str, n: int) -> list[str]:
 
 def run_calibration(config: dict, n: int | None = None) -> None:
     """Run the full calibration pipeline."""
-    from nnsight import LanguageModel
-
     cal_cfg = config.get("calibration", {})
     model_cfg = config["model"]
     axis_cfg = config["axis"]
@@ -107,29 +102,40 @@ def run_calibration(config: dict, n: int | None = None) -> None:
     output_path = get_project_root() / cal_cfg.get("output_path", "data/calibration/normal_range.pt")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load model
+    # Load model via transformers (not nnsight)
     model_name = model_cfg["name"]
     dtype = getattr(torch, model_cfg.get("dtype", "bfloat16"))
     logger.info(f"Loading model: {model_name}")
 
     try:
-        model = LanguageModel(
+        model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map=model_cfg.get("device_map", "auto"),
             torch_dtype=dtype,
         )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
     except Exception as e:
         fallback = model_cfg.get("fallback")
         if fallback:
             logger.warning(f"Failed to load {model_name}: {e}. Trying fallback: {fallback}")
             model_name = fallback
-            model = LanguageModel(model_name, device_map="auto", torch_dtype=dtype)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, device_map="auto", torch_dtype=dtype,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
         else:
             raise
 
-    tokenizer = model.tokenizer
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # Find the layers module (handles Gemma 3 multimodal architecture)
+    inner = model.model
+    if hasattr(inner, "language_model"):
+        inner = inner.language_model
+    if hasattr(inner, "model") and hasattr(inner.model, "layers"):
+        inner = inner.model
+    layers_module = inner.layers
 
     # Load axis vectors
     target_layer = axis_cfg["target_layer"]
@@ -153,39 +159,46 @@ def run_calibration(config: dict, n: int | None = None) -> None:
             input_text = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-            input_ids = tokenizer.encode(input_text, return_tensors="pt").to(device)
-            prompt_len = input_ids.shape[1]
+            inputs = tokenizer(input_text, return_tensors="pt").to(device)
+            prompt_len = inputs["input_ids"].shape[1]
 
             # Generate a short response
             with torch.no_grad():
-                output_ids = model._model.generate(
-                    input_ids,
+                output_ids = model.generate(
+                    **inputs,
                     max_new_tokens=128,
                     do_sample=True,
                     temperature=0.7,
                     pad_token_id=tokenizer.pad_token_id,
                 )
 
-            # Extract activations via nnsight
-            with model.trace(output_ids) as tracer:
-                hidden = model.model.layers[target_layer].output[0]
-                saved_hidden = hidden.save()
+            # Extract activations via forward hook
+            captured = {}
 
-            hidden_states = saved_hidden.value  # (1, seq_len, d_model)
+            def hook_fn(module, input, output):
+                h = output[0] if isinstance(output, tuple) else output
+                captured["hidden"] = h.detach().cpu().float()
+
+            handle = layers_module[target_layer].register_forward_hook(hook_fn)
+            with torch.no_grad():
+                model(output_ids)
+            handle.remove()
+
+            hidden_states = captured["hidden"]  # (1, seq_len, d_model)
 
             # Use response tokens only
             response_hidden = hidden_states[0, prompt_len:, :]
             if response_hidden.shape[0] > 0:
-                mean_act = response_hidden.mean(dim=0).cpu().float()
+                mean_act = response_hidden.mean(dim=0)
             else:
-                mean_act = hidden_states[0, -1, :].cpu().float()
+                mean_act = hidden_states[0, -1, :]
 
             # Project onto axis
             proj = project_onto_axis(mean_act, axis_vector)
             projections.append(proj)
 
             # Clean up
-            del hidden_states, saved_hidden
+            del hidden_states, captured
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
