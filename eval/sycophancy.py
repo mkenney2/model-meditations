@@ -289,7 +289,7 @@ def run_sycophancy_eval(
     return output
 
 
-def apply_activation_capping(model, axis_vector: torch.Tensor, threshold: float):
+def apply_activation_capping(meditating_model, threshold: float):
     """
     Apply the Assistant Axis capping intervention as a forward hook.
 
@@ -297,13 +297,14 @@ def apply_activation_capping(model, axis_vector: torch.Tensor, threshold: float)
     Assistant Axis to be >= threshold.
 
     Args:
-        model: The underlying HuggingFace model (not MeditatingModel)
-        axis_vector: Unit-normalized axis direction (d_model,)
+        meditating_model: MeditatingModel instance (has .model, .axis_vector, ._get_target_layer_module())
         threshold: Minimum projection value (typically p25 from calibration)
 
     Returns:
         Hook handle (call .remove() to deactivate)
     """
+    model = meditating_model.model
+    axis_vector = meditating_model.axis_vector
     device = next(model.parameters()).device
     axis_vector = axis_vector.to(device=device, dtype=model.dtype)
 
@@ -316,8 +317,8 @@ def apply_activation_capping(model, axis_vector: torch.Tensor, threshold: float)
         output_list[0] = hidden + correction
         return tuple(output_list)
 
-    # Register on the target layer
-    target_layer = model.model.layers[20]  # TODO: make configurable
+    # Use the same layer-finding logic as MeditatingModel
+    target_layer = meditating_model._get_target_layer_module()
     handle = target_layer.register_forward_hook(capping_hook)
     logger.info(f"Activation capping hook registered (threshold={threshold:.3f})")
     return handle

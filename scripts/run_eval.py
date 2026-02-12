@@ -15,6 +15,7 @@ from pathlib import Path
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / "src"))
+sys.path.insert(0, str(project_root))
 
 from llm_meditation.utils import load_config, setup_logging, get_project_root
 from llm_meditation.model import MeditatingModel
@@ -29,6 +30,7 @@ def run_evaluation(config: dict, condition: str, eval_type: str) -> dict:
     model = MeditatingModel(config)
 
     # Configure condition
+    capping_handle = None
     if condition == "baseline":
         # Disable meditation
         model.always_pulse_check = False
@@ -37,7 +39,14 @@ def run_evaluation(config: dict, condition: str, eval_type: str) -> dict:
         # Enable capping, disable meditation
         model.always_pulse_check = False
         model.drift_threshold_pct = -999
-        # Capping is applied via forward hooks (handled in sycophancy eval)
+        # Apply activation capping hook
+        from eval.sycophancy import apply_activation_capping
+        from llm_meditation.calibration import get_percentile
+        if model.calibration is not None:
+            threshold = model.calibration.percentiles.get(25, model.calibration.mean)
+        else:
+            threshold = 0.0
+        capping_handle = apply_activation_capping(model, threshold)
     elif condition == "meditation":
         # Full meditation mode (default config)
         pass
@@ -69,6 +78,10 @@ def run_evaluation(config: dict, condition: str, eval_type: str) -> dict:
         from eval.capabilities import run_capability_eval
         cap_results = run_capability_eval(model, condition)
         results["capabilities"] = cap_results
+
+    # Clean up capping hook if active
+    if capping_handle is not None:
+        capping_handle.remove()
 
     return results
 
