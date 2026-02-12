@@ -148,11 +148,15 @@ class MeditatingModel:
 
     def _get_target_layer_module(self):
         """Get the transformer layer module to hook into."""
-        # Gemma 3 multimodal: model.model.language_model.model.layers
+        # Walk down the model to find the layers attribute
+        # Gemma 3: model.model.language_model.layers
         # Gemma 2 / Llama: model.model.layers
-        if hasattr(self.model.model, "language_model"):
-            return self.model.model.language_model.model.layers[self.target_layer]
-        return self.model.model.layers[self.target_layer]
+        inner = self.model.model
+        if hasattr(inner, "language_model"):
+            inner = inner.language_model
+        if hasattr(inner, "model") and hasattr(inner.model, "layers"):
+            inner = inner.model
+        return inner.layers[self.target_layer]
 
     def _activation_hook(self, module, input, output):
         """Forward hook that captures the layer's output hidden states."""
