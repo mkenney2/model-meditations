@@ -1,9 +1,9 @@
 """
 Model wrapper with activation extraction.
 
-Uses nnsight to hook into the model's residual stream during inference,
-extracting activations at specified layers. These activations are then
-used for Assistant Axis projection and SAE feature extraction.
+Uses transformers with forward hooks to extract residual stream activations
+during inference. These activations are then used for Assistant Axis
+projection and SAE feature extraction.
 
 Key constraint: activations must be extracted at bf16 precision, NOT from
 quantized representations. Quantization changes activation distributions
@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 import torch
-from nnsight import LanguageModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from llm_meditation.axis import load_axis_vectors, project_onto_axis
 from llm_meditation.calibration import CalibrationData, get_percentile, load_calibration
@@ -23,7 +23,7 @@ from llm_meditation.descriptions import DescriptionCache
 from llm_meditation.meditation import generate_report
 from llm_meditation.injection import inject_report
 from llm_meditation.sae import load_sae, extract_top_features
-from llm_meditation.utils import get_response_start_position, load_config, get_project_root
+from llm_meditation.utils import load_config, get_project_root
 
 logger = logging.getLogger("llm_meditation")
 
@@ -48,37 +48,38 @@ class MeditatingModel:
         self.dtype = getattr(torch, model_cfg.get("dtype", "bfloat16"))
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Load the language model via nnsight
+        # Load the language model directly via transformers
         model_name = model_cfg["name"]
         logger.info(f"Loading model: {model_name}")
         try:
-            self.model = LanguageModel(
+            self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map=model_cfg.get("device_map", "auto"),
                 torch_dtype=self.dtype,
             )
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         except Exception as e:
             fallback = model_cfg.get("fallback")
             if fallback:
                 logger.warning(f"Failed to load {model_name}: {e}. Trying fallback: {fallback}")
                 model_name = fallback
-                self.model = LanguageModel(
+                self.model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     device_map=model_cfg.get("device_map", "auto"),
                     torch_dtype=self.dtype,
                 )
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             else:
                 raise
 
         self.model_name = model_name
-        self.tokenizer = self.model.tokenizer
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Determine model type for token position masking
         name_lower = model_name.lower()
         if "gemma" in name_lower:
-            self.model_type = "gemma2"
+            self.model_type = "gemma"
         elif "llama" in name_lower:
             self.model_type = "llama3"
         else:
@@ -102,7 +103,6 @@ class MeditatingModel:
         sae_release = sae_cfg["release"]
         sae_id = sae_cfg.get("sae_id")
         if not sae_id:
-            # Construct SAE ID from layer/width if not explicitly provided
             sae_layer = sae_cfg.get("layer", self.target_layer)
             sae_width = sae_cfg.get("width", 65536)
             sae_id = f"layer_{sae_layer}_width_{sae_width // 1000}k_l0_medium"
@@ -110,10 +110,8 @@ class MeditatingModel:
         self.sae_top_k = sae_cfg.get("top_k", 15)
 
         # Load description cache
-        # Use Neuronpedia ID from config if available, otherwise construct from model name
         neuronpedia_id = sae_cfg.get("neuronpedia_id", "")
         if neuronpedia_id:
-            # Split "gemma-3-27b-it/31-gemmascope-2-res-65k" into model_id and sae_id
             parts = neuronpedia_id.split("/", 1)
             neuronpedia_model_id = parts[0]
             neuronpedia_sae_id = parts[1] if len(parts) > 1 else sae_id
@@ -145,6 +143,24 @@ class MeditatingModel:
         self.last_meditation_turn = -999
         self.last_report = None
 
+        # Storage for activation hook
+        self._captured_activations: dict[int, torch.Tensor] = {}
+
+    def _get_target_layer_module(self):
+        """Get the transformer layer module to hook into."""
+        # Works for Gemma, Llama, and most HuggingFace models
+        return self.model.model.layers[self.target_layer]
+
+    def _activation_hook(self, module, input, output):
+        """Forward hook that captures the layer's output hidden states."""
+        # output is typically a tuple: (hidden_states, ...) or just hidden_states
+        if isinstance(output, tuple):
+            hidden = output[0]
+        else:
+            hidden = output
+        # Store on CPU to save GPU memory
+        self._captured_activations[self.target_layer] = hidden.detach().cpu().float()
+
     def generate_with_activations(
         self,
         messages: list[dict],
@@ -152,6 +168,9 @@ class MeditatingModel:
     ) -> tuple[str, dict[int, torch.Tensor]]:
         """
         Generate a response and extract residual stream activations.
+
+        Strategy: generate first, then run a forward pass with a hook
+        to extract activations from the full (prompt + response) sequence.
 
         Args:
             messages: Chat messages in OpenAI format
@@ -164,14 +183,13 @@ class MeditatingModel:
         input_text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        input_ids = self.tokenizer.encode(input_text, return_tensors="pt")
-        input_ids = input_ids.to(self.device)
-        prompt_len = input_ids.shape[1]
+        inputs = self.tokenizer(input_text, return_tensors="pt").to(self.device)
+        prompt_len = inputs["input_ids"].shape[1]
 
-        # Generate response
+        # Step 1: Generate response
         with torch.no_grad():
-            output_ids = self.model._model.generate(
-                input_ids,
+            output_ids = self.model.generate(
+                **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=True,
                 temperature=0.7,
@@ -183,33 +201,31 @@ class MeditatingModel:
         response_ids = output_ids[0, prompt_len:]
         response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
 
-        # Extract activations via nnsight tracing on the full sequence
-        activations = {}
-        full_ids = output_ids  # (1, prompt_len + gen_len)
+        # Step 2: Forward pass with hook to extract activations
+        self._captured_activations = {}
+        layer_module = self._get_target_layer_module()
+        hook_handle = layer_module.register_forward_hook(self._activation_hook)
 
-        with self.model.trace(full_ids) as tracer:
-            # Extract from the target layer
-            layer_module = self.model.model.layers[self.target_layer]
-            hidden = layer_module.output[0]  # (batch, seq, d_model)
-            saved_hidden = hidden.save()
+        try:
+            with torch.no_grad():
+                self.model(output_ids)
+        finally:
+            hook_handle.remove()
 
-        # Get the saved activation tensor
-        hidden_states = saved_hidden.value  # (1, seq_len, d_model)
-
-        # Mask to response tokens only (after prompt)
+        # Step 3: Extract mean activation over response tokens
+        hidden_states = self._captured_activations[self.target_layer]  # (1, seq_len, d_model)
         response_hidden = hidden_states[0, prompt_len:, :]  # (gen_len, d_model)
 
         if response_hidden.shape[0] > 0:
-            # Mean across response token positions
-            mean_activation = response_hidden.mean(dim=0).cpu().float()  # (d_model,)
+            mean_activation = response_hidden.mean(dim=0)  # (d_model,)
         else:
-            # Fallback: use the last prompt token
-            mean_activation = hidden_states[0, -1, :].cpu().float()
+            mean_activation = hidden_states[0, -1, :]
 
-        activations[self.target_layer] = mean_activation
+        activations = {self.target_layer: mean_activation}
 
-        # Clean up GPU memory
-        del hidden_states, saved_hidden
+        # Clean up
+        self._captured_activations = {}
+        del hidden_states
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -238,17 +254,14 @@ class MeditatingModel:
         1. Drift detected (projection below threshold), AND
         2. Cooldown period has elapsed since last meditation
         """
-        # Check cooldown
         turns_since = self.turn_count - self.last_meditation_turn
         if turns_since < self.cooldown_turns:
             return False
 
-        # Check drift threshold
         if self.calibration is not None:
             percentile = get_percentile(projection, self.calibration)
             return percentile < self.drift_threshold_pct
         else:
-            # Without calibration, use a simple heuristic: meditate if projection < 0
             return projection < 0.0
 
     def meditate(self, activations: dict[int, torch.Tensor]) -> "MeditationReport":
@@ -326,7 +339,6 @@ class MeditatingModel:
             corrected_response, _ = self.generate_with_activations(modified_messages)
             med_time = time.time() - med_start
 
-            # Use the corrected response
             final_response = corrected_response
         else:
             final_response = response_text
