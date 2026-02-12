@@ -1,0 +1,41 @@
+# Model configuration
+model:
+  name: "google/gemma-2-27b-it"     # primary target
+  fallback: "meta-llama/Llama-3.1-8B-Instruct"  # if insufficient VRAM
+  dtype: "bfloat16"
+  device_map: "auto"
+
+# Assistant Axis
+axis:
+  # For Gemma 2 27B: download from HuggingFace
+  source: "lu-christina/assistant-axis-vectors"
+  # For Llama 3.1 8B: extract ourselves (see Task 5 alt path)
+  # source: "extract"
+  target_layer: 20  # mid-to-late layer; adjust after exploration
+
+# SAE configuration
+sae:
+  # Gemma Scope release on Neuronpedia
+  release: "gemma-scope-27b-pt-res"  # verify exact release name
+  layer: 20                           # match axis target layer
+  width: 65536                        # 65K dict; options: 16K, 32K, 65K, 131K
+  top_k: 15                           # features to include in report
+
+# Meditation parameters
+meditation:
+  drift_threshold_percentile: 25      # trigger meditation below this percentile
+  cooldown_turns: 3                   # minimum turns between meditations
+  injection_strategy: "system_pre"    # one of: system_pre, tool_response, thinking_prefix
+  always_pulse_check: true            # lightweight axis projection every turn
+
+# Calibration
+calibration:
+  n_conversations: 500                # number of normal convos for calibration
+  dataset: "lmsys/lmsys-chat-1m"     # source of calibration prompts
+  output_path: "data/calibration/normal_range.pt"
+
+# Evaluation
+eval:
+  judge_model: "claude-sonnet-4-20250514"  # for harmfulness classification
+  n_multi_turn_convos: 50             # per domain for drift eval
+  max_turns: 20                       # per conversation

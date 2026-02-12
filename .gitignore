@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large files, downloaded models/datasets)
+data/axis_vectors/*.pt
+data/axis_vectors/*.safetensors
+data/axis_vectors/*.npy
+data/calibration/*.pt
+data/feature_cache/*.json
+data/eval_datasets/
+
+# Results (regenerated from experiments)
+results/
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# Secrets
+.env
