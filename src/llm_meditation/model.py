@@ -148,7 +148,10 @@ class MeditatingModel:
 
     def _get_target_layer_module(self):
         """Get the transformer layer module to hook into."""
-        # Works for Gemma, Llama, and most HuggingFace models
+        # Gemma 3 multimodal: model.model.language_model.model.layers
+        # Gemma 2 / Llama: model.model.layers
+        if hasattr(self.model.model, "language_model"):
+            return self.model.model.language_model.model.layers[self.target_layer]
         return self.model.model.layers[self.target_layer]
 
     def _activation_hook(self, module, input, output):
