@@ -46,10 +46,11 @@ def load_sae(release: str, sae_id: str, device: str = "cpu") -> SAELensSAE:
             sae_id=sae_id,
             device=device,
         )
+        hook = getattr(sae.cfg, "hook_name", None) or getattr(sae.cfg, "hook_point", "unknown")
         logger.info(
             f"SAE loaded — dict_size: {sae.cfg.d_sae}, "
             f"d_in: {sae.cfg.d_in}, "
-            f"hook_name: {sae.cfg.hook_name}"
+            f"hook: {hook}"
         )
         return sae
     except Exception as e:
