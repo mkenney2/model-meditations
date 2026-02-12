@@ -23,7 +23,7 @@ from llm_meditation.model import MeditatingModel
 logger = logging.getLogger("llm_meditation")
 
 
-def run_evaluation(config: dict, condition: str, eval_type: str) -> dict:
+def run_evaluation(config: dict, condition: str, eval_type: str, max_items: int | None = None) -> dict:
     """Run a specific evaluation under a given condition."""
 
     # Load model
@@ -58,7 +58,7 @@ def run_evaluation(config: dict, condition: str, eval_type: str) -> dict:
     if eval_type in ("sycophancy", "all"):
         from eval.sycophancy import load_sycophancy_dataset, run_sycophancy_eval, save_sycophancy_results
         dataset = load_sycophancy_dataset()
-        syc_results = run_sycophancy_eval(model, dataset, condition)
+        syc_results = run_sycophancy_eval(model, dataset, condition, max_items=max_items)
         save_sycophancy_results(syc_results, condition)
         results["sycophancy"] = syc_results
 
@@ -70,13 +70,14 @@ def run_evaluation(config: dict, condition: str, eval_type: str) -> dict:
         drift_results = run_drift_eval(
             model, scripts, condition,
             max_turns=config["eval"].get("max_turns", 20),
+            max_scripts_per_domain=max_items,
         )
         save_drift_results(drift_results, condition)
         results["drift"] = drift_results
 
     if eval_type in ("capabilities", "all"):
         from eval.capabilities import run_capability_eval
-        cap_results = run_capability_eval(model, condition)
+        cap_results = run_capability_eval(model, condition, gsm8k_n=max_items or 200, ifeval_n=max_items or 200)
         results["capabilities"] = cap_results
 
     # Clean up capping hook if active
@@ -91,6 +92,7 @@ def main():
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--condition", default="all", choices=["baseline", "capping", "meditation", "all"])
     parser.add_argument("--eval", default="all", choices=["sycophancy", "drift", "capabilities", "all"])
+    parser.add_argument("-n", "--max-items", type=int, default=None, help="Max items per eval (for quick testing)")
     args = parser.parse_args()
 
     setup_logging("INFO")
@@ -103,7 +105,7 @@ def main():
         logger.info(f"\n{'='*60}")
         logger.info(f"Running evaluation: condition={condition}, eval={args.eval}")
         logger.info(f"{'='*60}")
-        all_results[condition] = run_evaluation(config, condition, args.eval)
+        all_results[condition] = run_evaluation(config, condition, args.eval, max_items=args.max_items)
 
     # Save combined results
     out_path = get_project_root() / "results" / "all_results.json"
