@@ -7,10 +7,10 @@ model:
 
 # Assistant Axis
 axis:
-  # Pre-computed vectors from HuggingFace
-  source: "lu-christina/assistant-axis-vectors"
-  # NOTE: These vectors are for Gemma 2 27B. If they don't match Gemma 3 27B
-  # dimensions, we'll need to extract our own (see Task 5a alternate path).
+  # Extracted vectors for Gemma 3 27B-IT (run scripts/extract_axis.py first)
+  source: "data/axis_vectors/gemma_3_27b_it_axis.pt"
+  # Fallback: pre-computed for Gemma 2 (wrong dimensions for Gemma 3)
+  # source: "lu-christina/assistant-axis-vectors"
   target_layer: 31  # mid-to-late layer; must match an available SAE layer
 
 # SAE configuration
