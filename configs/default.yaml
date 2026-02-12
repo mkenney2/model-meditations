@@ -1,25 +1,28 @@
 # Model configuration
 model:
-  name: "google/gemma-2-27b-it"     # primary target
+  name: "google/gemma-3-27b-it"      # Gemma 3 27B-IT (matches available SAEs)
   fallback: "meta-llama/Llama-3.1-8B-Instruct"  # if insufficient VRAM
   dtype: "bfloat16"
   device_map: "auto"
 
 # Assistant Axis
 axis:
-  # For Gemma 2 27B: download from HuggingFace
+  # Pre-computed vectors from HuggingFace
   source: "lu-christina/assistant-axis-vectors"
-  # For Llama 3.1 8B: extract ourselves (see Task 5 alt path)
-  # source: "extract"
-  target_layer: 20  # mid-to-late layer; adjust after exploration
+  # NOTE: These vectors are for Gemma 2 27B. If they don't match Gemma 3 27B
+  # dimensions, we'll need to extract our own (see Task 5a alternate path).
+  target_layer: 31  # mid-to-late layer; must match an available SAE layer
 
 # SAE configuration
 sae:
-  # Gemma Scope release on Neuronpedia
-  release: "gemma-scope-27b-pt-res"  # verify exact release name
-  layer: 20                           # match axis target layer
-  width: 65536                        # 65K dict; options: 16K, 32K, 65K, 131K
+  # Gemma Scope 2 for Gemma 3 27B-IT (instruction-tuned, residual stream)
+  release: "gemma-scope-2-27b-it-res"
+  sae_id: "layer_31_width_65k_l0_medium"  # explicit SAE ID
+  layer: 31                           # available: 16, 31, 40, 53
+  width: 65536                        # 65K dict; options: 16K, 65K, 262K, 1M
   top_k: 15                           # features to include in report
+  # Neuronpedia ID for descriptions
+  neuronpedia_id: "gemma-3-27b-it/31-gemmascope-2-res-65k"
 
 # Meditation parameters
 meditation:

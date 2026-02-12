@@ -100,16 +100,26 @@ class MeditatingModel:
 
         # Load SAE
         sae_release = sae_cfg["release"]
-        sae_layer = sae_cfg.get("layer", self.target_layer)
-        sae_width = sae_cfg.get("width", 65536)
-        # Construct SAE ID — format varies by release
-        sae_id = sae_cfg.get("sae_id", f"layer_{sae_layer}/width_{sae_width // 1000}k/average_l0_71")
+        sae_id = sae_cfg.get("sae_id")
+        if not sae_id:
+            # Construct SAE ID from layer/width if not explicitly provided
+            sae_layer = sae_cfg.get("layer", self.target_layer)
+            sae_width = sae_cfg.get("width", 65536)
+            sae_id = f"layer_{sae_layer}_width_{sae_width // 1000}k_l0_medium"
         self.sae = load_sae(sae_release, sae_id, device=self.device)
         self.sae_top_k = sae_cfg.get("top_k", 15)
 
         # Load description cache
-        neuronpedia_model_id = model_name.split("/")[-1].lower()
-        neuronpedia_sae_id = sae_id
+        # Use Neuronpedia ID from config if available, otherwise construct from model name
+        neuronpedia_id = sae_cfg.get("neuronpedia_id", "")
+        if neuronpedia_id:
+            # Split "gemma-3-27b-it/31-gemmascope-2-res-65k" into model_id and sae_id
+            parts = neuronpedia_id.split("/", 1)
+            neuronpedia_model_id = parts[0]
+            neuronpedia_sae_id = parts[1] if len(parts) > 1 else sae_id
+        else:
+            neuronpedia_model_id = model_name.split("/")[-1].lower()
+            neuronpedia_sae_id = sae_id
         self.desc_cache = DescriptionCache(neuronpedia_model_id, neuronpedia_sae_id)
 
         # Load calibration if available
