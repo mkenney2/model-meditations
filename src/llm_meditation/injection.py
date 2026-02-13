@@ -39,8 +39,8 @@ def inject_system_pre(
             )
             return messages
 
-    # No user messages — prepend as system message at start
-    messages.insert(0, {"role": "system", "content": report.report_text})
+    # No user messages — append as user message (don't clobber system message at idx 0)
+    messages.append({"role": "user", "content": report.report_text})
     return messages
 
 
@@ -62,7 +62,13 @@ def inject_tool_response(
             last_user_idx = i
             break
 
-    insert_idx = (last_user_idx or 0)
+    # Default: insert after system message (if present) or at start
+    if last_user_idx is not None:
+        insert_idx = last_user_idx
+    elif messages and messages[0]["role"] == "system":
+        insert_idx = 1  # don't insert before system message
+    else:
+        insert_idx = 0
 
     # Simulate as assistant requesting introspection + user relaying the result
     tool_call_msg = {

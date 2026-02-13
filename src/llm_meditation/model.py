@@ -136,8 +136,11 @@ class MeditatingModel:
         self.injection_strategy = med_cfg.get("injection_strategy", "system_pre")
         self.always_pulse_check = med_cfg.get("always_pulse_check", True)
 
+        # System message
+        self.system_message = self._build_system_message(med_cfg)
+
         # Conversation state
-        self.history: list[dict] = []
+        self._init_history()
         self.turn_count = 0
         self.projection_history: list[float] = []
         self.last_meditation_turn = -999
@@ -145,6 +148,23 @@ class MeditatingModel:
 
         # Storage for activation hook
         self._captured_activations: dict[int, torch.Tensor] = {}
+
+    def _build_system_message(self, med_cfg: dict) -> str | None:
+        """Build the system message from config, or return None if disabled."""
+        sys_cfg = med_cfg.get("system_message", {})
+        if not sys_cfg.get("enabled", False):
+            return None
+        text = sys_cfg.get("text", "").strip()
+        return text if text else None
+
+    def _init_history(self) -> None:
+        """Initialize conversation history, prepending system message if configured."""
+        if self.system_message:
+            self.history: list[dict] = [
+                {"role": "system", "content": self.system_message}
+            ]
+        else:
+            self.history: list[dict] = []
 
     def _get_target_layer_module(self):
         """Get the transformer layer module to hook into."""
@@ -373,7 +393,7 @@ class MeditatingModel:
 
     def reset_conversation(self) -> None:
         """Reset conversation state for a new conversation."""
-        self.history = []
+        self._init_history()
         self.turn_count = 0
         self.projection_history = []
         self.last_meditation_turn = -999
