@@ -30,7 +30,7 @@ if [ -d "$PROJECT/.git" ]; then
 else
     echo "[2/5] Cloning repo..."
     cd /workspace
-    git clone https://github.com/mkennedy616/model-meditation.git model-meditations
+    git clone https://github.com/mkenney2/model-meditations.git model-meditations
 fi
 cd $PROJECT
 
