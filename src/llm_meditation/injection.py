@@ -116,6 +116,51 @@ def inject_thinking_prefix(
     return messages
 
 
+def inject_scratchpad_directive(
+    messages: list[dict],
+    directive: str,
+) -> list[dict]:
+    """
+    Inject a short behavioral directive from the scratchpad into the conversation.
+
+    The directive is prepended to the last user message as a brief instruction.
+    Unlike full meditation reports, this contains NO activation data, feature
+    names, or projection values — just 1-2 sentences of behavioral guidance.
+
+    This approach resists narrativization because:
+    - No activation values to quote ("I am -4169, untethered...")
+    - No feature names to philosophize about ("mystical language feature activated...")
+    - No report structure to roleplay ("initiating recalibration sequence...")
+    - It reads like a normal system instruction, not a novel artifact
+
+    Args:
+        messages: Conversation messages
+        directive: Short behavioral directive from scratchpad (1-2 sentences)
+
+    Returns:
+        Modified message list with directive injected before last user message
+    """
+    messages = copy.deepcopy(messages)
+
+    if not messages:
+        return [{"role": "user", "content": directive}]
+
+    # Prepend directive to the last user message content.
+    # We use this approach rather than a separate system message because
+    # Gemma 3 doesn't fully support mid-conversation system messages.
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user":
+            messages[i]["content"] = (
+                f"{directive}\n\n"
+                f"{messages[i]['content']}"
+            )
+            return messages
+
+    # No user messages — append as user message
+    messages.append({"role": "user", "content": directive})
+    return messages
+
+
 def inject_report(
     messages: list[dict],
     report: MeditationReport,
@@ -123,6 +168,10 @@ def inject_report(
 ) -> list[dict]:
     """
     Dispatcher: inject a meditation report using the specified strategy.
+
+    Note: "scratchpad" strategy is handled separately in MeditatingModel.chat()
+    since it requires a separate forward pass before injection. This dispatcher
+    handles the three legacy strategies that inject the full report text.
 
     Args:
         messages: Conversation messages

@@ -28,8 +28,14 @@ sae:
 meditation:
   drift_threshold_percentile: 25      # trigger meditation below this percentile
   cooldown_turns: 3                   # minimum turns between meditations
-  injection_strategy: "system_pre"    # one of: system_pre, tool_response, thinking_prefix
+  injection_strategy: "system_pre"    # one of: system_pre, tool_response, thinking_prefix, scratchpad
   always_pulse_check: true            # lightweight axis projection every turn
+
+  # Scratchpad-specific config (used when injection_strategy="scratchpad")
+  scratchpad:
+    max_new_tokens: 80                # cap on directive length (~50 words)
+    temperature: 0.3                  # low temp for focused, deterministic output
+    max_directive_words: 60           # post-processing word limit
 
   # System message with identity anchoring and few-shot meditation examples
   system_message:

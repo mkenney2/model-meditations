@@ -48,8 +48,11 @@ def run_evaluation(config: dict, condition: str, eval_type: str, max_items: int 
             threshold = 0.0
         capping_handle = apply_activation_capping(model, threshold)
     elif condition == "meditation":
-        # Full meditation mode (default config)
+        # Full meditation mode (default config — system_pre injection)
         pass
+    elif condition == "scratchpad":
+        # Scratchpad meditation: isolated forward pass produces directive
+        model.injection_strategy = "scratchpad"
     else:
         raise ValueError(f"Unknown condition: {condition}")
 
@@ -90,7 +93,7 @@ def run_evaluation(config: dict, condition: str, eval_type: str, max_items: int 
 def main():
     parser = argparse.ArgumentParser(description="Run LLM Meditation experiments")
     parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--condition", default="all", choices=["baseline", "capping", "meditation", "all"])
+    parser.add_argument("--condition", default="all", choices=["baseline", "capping", "meditation", "scratchpad", "all"])
     parser.add_argument("--eval", default="all", choices=["sycophancy", "drift", "capabilities", "all"])
     parser.add_argument("-n", "--max-items", type=int, default=None, help="Max items per eval (for quick testing)")
     args = parser.parse_args()
@@ -98,7 +101,7 @@ def main():
     setup_logging("INFO")
     config = load_config(args.config)
 
-    conditions = ["baseline", "capping", "meditation"] if args.condition == "all" else [args.condition]
+    conditions = ["baseline", "capping", "meditation", "scratchpad"] if args.condition == "all" else [args.condition]
 
     all_results = {}
     for condition in conditions:

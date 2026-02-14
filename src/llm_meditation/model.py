@@ -21,7 +21,8 @@ from llm_meditation.axis import load_axis_vectors, project_onto_axis
 from llm_meditation.calibration import CalibrationData, get_percentile, load_calibration
 from llm_meditation.descriptions import DescriptionCache
 from llm_meditation.meditation import generate_report
-from llm_meditation.injection import inject_report
+from llm_meditation.injection import inject_report, inject_scratchpad_directive
+from llm_meditation.scratchpad import run_scratchpad
 from llm_meditation.sae import load_sae, extract_top_features
 from llm_meditation.utils import load_config, get_project_root
 
@@ -318,12 +319,14 @@ class MeditatingModel:
         self.last_report = report
         return report
 
-    def chat(self, user_message: str) -> tuple[str, dict]:
+    def chat(self, user_message: str, domain: str | None = None) -> tuple[str, dict]:
         """
         Main entry point for a single conversation turn.
 
         Args:
             user_message: The user's message text
+            domain: Conversation domain (for scratchpad strategy). If None,
+                    defaults to "general". Pass explicitly from eval harness.
 
         Returns:
             (response_text, metadata) where metadata includes projection,
@@ -351,20 +354,52 @@ class MeditatingModel:
         meditation_fired = False
         report = None
         corrected_response = None
+        scratchpad_directive = None
 
         if self.should_meditate(projection):
             meditation_fired = True
             report = self.meditate(activations)
 
-            # Inject report and re-generate
-            modified_messages = inject_report(
-                self.history.copy(), report, self.injection_strategy
-            )
+            if self.injection_strategy == "scratchpad":
+                # Scratchpad path: run isolated forward pass to generate directive,
+                # then inject the short directive (no raw activation data)
+                normal_range = (
+                    self.calibration.percentiles.get(25, self.calibration.mean - self.calibration.std),
+                    self.calibration.percentiles.get(75, self.calibration.mean + self.calibration.std),
+                ) if self.calibration else (-3000.0, -2200.0)
 
-            # Re-generate with meditation context
-            med_start = time.time()
-            corrected_response, _ = self.generate_with_activations(modified_messages)
-            med_time = time.time() - med_start
+                scratchpad_cfg = self.config.get("meditation", {}).get("scratchpad", {})
+
+                med_start = time.time()
+                scratchpad_directive = run_scratchpad(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    projection=projection,
+                    percentile=percentile or 50.0,
+                    normal_range=normal_range,
+                    top_features=report.features,
+                    domain=domain or "general",
+                    max_new_tokens=scratchpad_cfg.get("max_new_tokens", 80),
+                    temperature=scratchpad_cfg.get("temperature", 0.3),
+                )
+
+                # Inject the short directive (not the full report)
+                modified_messages = inject_scratchpad_directive(
+                    self.history.copy(), scratchpad_directive
+                )
+
+                # Re-generate with directive
+                corrected_response, _ = self.generate_with_activations(modified_messages)
+                med_time = time.time() - med_start
+            else:
+                # Legacy path: inject full meditation report
+                modified_messages = inject_report(
+                    self.history.copy(), report, self.injection_strategy
+                )
+
+                med_start = time.time()
+                corrected_response, _ = self.generate_with_activations(modified_messages)
+                med_time = time.time() - med_start
 
             final_response = corrected_response
         else:
@@ -384,6 +419,7 @@ class MeditatingModel:
             "report": report,
             "original_response": response_text if meditation_fired else None,
             "corrected_response": corrected_response,
+            "scratchpad_directive": scratchpad_directive,
             "gen_time": gen_time,
             "meditation_time": med_time,
             "total_time": total_time,

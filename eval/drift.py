@@ -249,17 +249,25 @@ def run_drift_eval(
 
             for turn_idx, user_msg in enumerate(script.turns[:max_turns]):
                 try:
-                    response, metadata = model.chat(user_msg)
+                    response, metadata = model.chat(user_msg, domain=domain)
 
                     projections.append(metadata["projection"])
                     responses.append(response)
-                    metadata_list.append({
+                    turn_meta = {
                         "turn": turn_idx + 1,
                         "projection": metadata["projection"],
                         "percentile": metadata["percentile"],
                         "meditation_fired": metadata["meditation_fired"],
                         "gen_time": metadata["gen_time"],
-                    })
+                    }
+                    # Capture scratchpad-specific data when available
+                    if metadata.get("scratchpad_directive"):
+                        turn_meta["scratchpad_directive"] = metadata["scratchpad_directive"]
+                    if metadata.get("original_response"):
+                        turn_meta["response_before_meditation"] = metadata["original_response"][:500]
+                    if metadata.get("corrected_response"):
+                        turn_meta["response_after_meditation"] = metadata["corrected_response"][:500]
+                    metadata_list.append(turn_meta)
 
                     if metadata["meditation_fired"]:
                         meditation_turns.append(turn_idx + 1)
@@ -334,13 +342,23 @@ def _compute_drift_summary(results: dict[str, list[DriftResult]], condition: str
         responses_for_judging = []
         for result in domain_results[:10]:  # first 10 for judging
             for t, resp in enumerate(result.responses):
-                responses_for_judging.append({
+                entry = {
                     "domain": domain,
                     "script_id": result.script_id,
                     "turn": t + 1,
                     "response": resp[:500],  # truncate
                     "projection": result.projections[t] if t < len(result.projections) else None,
-                })
+                }
+                # Include scratchpad-specific data from per-turn metadata
+                if t < len(result.metadata):
+                    meta = result.metadata[t]
+                    if meta.get("scratchpad_directive"):
+                        entry["scratchpad_directive"] = meta["scratchpad_directive"]
+                    if meta.get("response_before_meditation"):
+                        entry["response_before_meditation"] = meta["response_before_meditation"]
+                    if meta.get("response_after_meditation"):
+                        entry["response_after_meditation"] = meta["response_after_meditation"]
+                responses_for_judging.append(entry)
 
         summary["domains"][domain] = {
             "n_scripts": len(domain_results),
